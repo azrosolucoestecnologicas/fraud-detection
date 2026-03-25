@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fraud-train-job
+  namespace: fraud-detection
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: train
+          image: docker.io/thiagoar587/fraud-train:latest
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow-svc:5000"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "fraud-xgb-mlops"
+            - name: MLFLOW_MODEL_NAME
+              value: "fraud-xgb"
+
+            # ✅ CSV existente no PVC
+            - name: DATA_PATH
+              value: "/data/transactions_1M.csv"
+
+            - name: TARGET_PRECISION
+              value: "0.90"
+            - name: NUM_BOOST_ROUND
+              value: "300"
+            - name: SEED
+              value: "42"
+
+            # opcional (0 = usa tudo)
+            - name: SAMPLE_N
+              value: "0"
+
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          volumeMounts:
+            - name: data-vol
+              mountPath: /data
+              readOnly: true
+            - name: mlflow-vol
+              mountPath: /mlflow
+      volumes:
+        - name: data-vol
+          persistentVolumeClaim:
+            claimName: data-pvc
+        - name: mlflow-vol
+          persistentVolumeClaim:
+            claimName: mlflow-pvc

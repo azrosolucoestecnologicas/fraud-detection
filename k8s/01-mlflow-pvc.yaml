@@ -1,0 +1,12 @@
+#### PVC do MLflow — `01-mlflow-pvc.yaml`
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-pvc
+  namespace: fraud-detection
+spec:
+  accessModes: ["ReadWriteOnce"]   # montado em apenas 1 nó por vez (suficiente para 1 replica)
+  resources:
+    requests:
+      storage: 5Gi                 # 5 GB para banco SQLite + artefatos (modelos, imagens)

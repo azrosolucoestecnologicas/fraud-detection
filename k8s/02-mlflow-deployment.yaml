@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: fraud-detection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: docker.io/thiagoar587/mlflow-server:latest
+          ports:
+            - containerPort: 5000
+          volumeMounts:
+            - name: mlflow-vol
+              mountPath: /mlflow
+      volumes:
+        - name: mlflow-vol
+          persistentVolumeClaim:
+            claimName: mlflow-pvc
