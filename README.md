@@ -1,6 +1,6 @@
 # Fraud Detection — End-to-End MLOps Pipeline
 
-> Real-time fraud scoring for financial transactions, from model training to Kubernetes deployment.
+> Real-time fraud scoring for financial transactions, from model training to Kubernetes deployment — with safe, conditional model promotion.
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![XGBoost](https://img.shields.io/badge/XGBoost-2.1-blue)
@@ -17,8 +17,9 @@ Production-grade pipeline that trains an **XGBoost** classifier on 1M+ synthetic
 
 The system classifies each transaction as fraudulent or legitimate by analysing 12 behavioral and contextual features, achieving **> 0.90 precision** with a calibrated decision threshold.
 
-### Architecture
+A key design decision: **new models are only promoted to production if they measurably outperform the current champion** — preventing silent regressions in fraud detection quality.
 
+### Architecture
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐
 │   Training   │────▶│    MLflow     │◀────│   Serving API    │
@@ -26,13 +27,58 @@ The system classifies each transaction as fraudulent or legitimate by analysing 
 └──────┬───────┘     └──────────────┘     └────────┬─────────┘
        │                                           │
        │  logs params, metrics, artifacts          │  loads champion model
-       │  registers model as "champion"            │  returns P(fraud)
+       │  conditionally promotes to champion        │  returns P(fraud)
        │                                           │
 ┌──────▼───────┐                          ┌────────▼─────────┐
 │  Train Job   │                          │  Serve Deploy    │
 │  (K8s Job)   │                          │  (K8s Deployment)│
 └──────────────┘                          └──────────────────┘
 ```
+
+---
+
+## Conditional Champion Promotion
+
+Most MLOps tutorials blindly promote every newly trained model to production. This pipeline doesn't — it implements a **promotion gate** that protects production quality.
+
+### How it works
+```
+Train new model
+       │
+       ▼
+Evaluate on test set (AUPRC, AUROC, Precision, Recall)
+       │
+       ▼
+Fetch current champion's AUPRC from MLflow Registry
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│  new AUPRC > champion AUPRC + delta ?    │
+├──────────┬───────────────────────────────┤
+│   YES    │  Promote → alias "champion"   │
+│   NO     │  Tag as  → alias "challenger" │
+└──────────┴───────────────────────────────┘
+```
+
+The new model is **always registered** in the Model Registry (no work is lost), but the `champion` alias only moves if the improvement is real. If it doesn't beat the current champion, it gets the `challenger` alias — available for inspection in the MLflow UI but never served to users.
+
+### Promotion controls
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROMOTION_METRIC` | `auprc` | Metric used for comparison |
+| `MIN_DELTA` | `0.0` | Minimum improvement required to promote |
+| `FORCE_PROMOTE` | `0` | Set to `1` to skip comparison (first deploy, hotfix) |
+
+### Traceability
+
+Every training run logs:
+
+- `promoted_to_champion` tag — `True` or `False`
+- `champion_baseline` metric — the champion's AUPRC at time of training
+- `improvement_over_champion` metric — the delta (positive = better)
+
+This makes it easy to filter runs in the MLflow UI and trace the full promotion history.
 
 ---
 
@@ -56,11 +102,10 @@ The system classifies each transaction as fraudulent or legitimate by analysing 
 ---
 
 ## Project Structure
-
 ```
 fraud-detection/
 ├── src/
-│   ├── train.py                # Training pipeline + MLflow logging
+│   ├── train.py                # Training + conditional promotion
 │   └── serve.py                # FastAPI inference service
 ├── docker/
 │   ├── Dockerfile.mlflow       # MLflow tracking server
@@ -89,25 +134,29 @@ fraud-detection/
 ## Quick Start
 
 ### Local Development
-
 ```bash
 # 1. Start MLflow server
 mlflow server --backend-store-uri sqlite:///mlflow.db \
               --default-artifact-root ./mlartifacts \
               --host 0.0.0.0 --port 5000
 
-# 2. Train
+# 2. Train (first run — auto-promotes since no champion exists)
 make train
 
-# 3. Serve
+# 3. Train again (only promotes if AUPRC improves)
+make train
+
+# 4. Force promote regardless of comparison
+FORCE_PROMOTE=1 make train
+
+# 5. Serve
 make serve
 
-# 4. Test
+# 6. Test
 make test
 ```
 
 ### Kubernetes Deployment
-
 ```bash
 # Build and push images
 make docker-build docker-push
@@ -127,7 +176,6 @@ make test
 ### `GET /health`
 
 Returns service status and model readiness.
-
 ```json
 {
   "status": "ok",
@@ -141,7 +189,6 @@ Returns service status and model readiness.
 Accepts a batch of transactions and returns fraud probabilities.
 
 **Request:**
-
 ```json
 {
   "x": [
@@ -152,15 +199,12 @@ Accepts a batch of transactions and returns fraud probabilities.
 ```
 
 **Response:**
-
 ```json
 {
   "predictions": [0.031204, 0.984712],
   "count": 2
 }
 ```
-
-Probabilities above the calibrated threshold (default ≈ 0.50) indicate a suspicious transaction.
 
 ---
 
@@ -173,7 +217,7 @@ Probabilities above the calibrated threshold (default ≈ 0.50) indicate a suspi
 | **Class imbalance** | Handled via `scale_pos_weight` |
 | **Threshold selection** | Maximizes recall at target precision (default 90%) |
 | **Experiment tracking** | All params, metrics, and artifacts logged to MLflow |
-| **Model registry** | Promoted to `champion` alias after training |
+| **Promotion** | Conditional — only if AUPRC beats current champion |
 
 ### Configurable Hyperparameters
 
